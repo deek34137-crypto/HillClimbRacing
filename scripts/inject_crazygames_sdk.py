@@ -1,48 +1,65 @@
 #!/usr/bin/env python3
 """
-Injects the CrazyGames SDK v2 into a Godot 4 Web export HTML file.
-Also hooks into the Godot engine lifecycle for:
-  - sdkGameLoadingStop() — when game finishes loading
-  - gameplayStart() / gameplayStop() — when gameplay begins/pauses
+Injects into a Godot 4 Web export HTML file:
+1. coi-serviceworker (enables Cross-Origin Isolation & SharedArrayBuffer on GitHub Pages / static hosts)
+2. CrazyGames SDK v2 + lifecycle hooks
 """
 
 import sys
-import re
+import os
+import shutil
+from pathlib import Path
 
 def inject_sdk(html_path: str) -> None:
-    with open(html_path, "r", encoding="utf-8") as f:
+    html_file = Path(html_path)
+    if not html_file.exists():
+        print(f"❌ HTML file not found: {html_path}")
+        sys.exit(1)
+
+    export_dir = html_file.parent
+
+    # 1. Copy coi-serviceworker.min.js if available
+    script_dir = Path(__file__).resolve().parent
+    coi_source = script_dir / "coi-serviceworker.min.js"
+    if coi_source.exists():
+        shutil.copy(coi_source, export_dir / "coi-serviceworker.min.js")
+        print(f"✅ Copied coi-serviceworker.min.js to {export_dir}")
+
+    with open(html_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # 1. Inject SDK script tag in <head>
-    sdk_script = (
-        '\n    <!-- CrazyGames SDK v2 -->\n'
-        '    <script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>\n'
-    )
-    if "crazygames-sdk" in content:
-        print("✅ CrazyGames SDK already present, skipping injection.")
-        return
+    # 2. Inject coi-serviceworker at the very top of <head>
+    if "coi-serviceworker.min.js" not in content and (export_dir / "coi-serviceworker.min.js").exists():
+        coi_tag = '<script src="coi-serviceworker.min.js"></script>\n'
+        content = content.replace("<head>", f"<head>\n    {coi_tag}", 1)
+        print("✅ Injected coi-serviceworker tag into <head>")
 
-    content = content.replace("</head>", sdk_script + "</head>", 1)
+    # 3. Inject CrazyGames SDK script tag in <head>
+    if "crazygames-sdk" not in content:
+        sdk_script = (
+            '\n    <!-- CrazyGames SDK v2 -->\n'
+            '    <script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>\n'
+        )
+        content = content.replace("</head>", sdk_script + "</head>", 1)
+        print("✅ Injected CrazyGames SDK into <head>")
 
-    # 2. Inject lifecycle hooks — inserted just before engine.startGame()
-    lifecycle_js = """
+    # 4. Inject lifecycle hooks before </body>
+    if "CrazyGamesHooks" not in content:
+        lifecycle_js = """
     <!-- CrazyGames SDK Lifecycle Hooks -->
     <script>
     (function() {
         var _sdk = function() { return window.CrazyGames && window.CrazyGames.SDK; };
 
-        // Called once Godot's engine has fully loaded
         function onGameLoaded() {
             var sdk = _sdk();
             if (sdk && sdk.game) {
                 sdk.game.sdkGameLoadingStop();
                 console.log('[CrazyGames] sdkGameLoadingStop called');
             }
-            // Signal gameplay start after loading
             onGameplayStart();
         }
 
-        // Called when gameplay begins (level starts, resumed from pause)
         function onGameplayStart() {
             var sdk = _sdk();
             if (sdk && sdk.game) {
@@ -51,7 +68,6 @@ def inject_sdk(html_path: str) -> None:
             }
         }
 
-        // Called when gameplay pauses (menu open, ad showing)
         function onGameplayStop() {
             var sdk = _sdk();
             if (sdk && sdk.game) {
@@ -60,7 +76,6 @@ def inject_sdk(html_path: str) -> None:
             }
         }
 
-        // Pause/resume when tab visibility changes
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
                 onGameplayStop();
@@ -69,7 +84,6 @@ def inject_sdk(html_path: str) -> None:
             }
         });
 
-        // Expose globally so GDScript can call via JavaScriptBridge
         window.CrazyGamesHooks = {
             gameLoaded: onGameLoaded,
             gameplayStart: onGameplayStart,
@@ -88,10 +102,7 @@ def inject_sdk(html_path: str) -> None:
             }
         };
 
-        // Hook into Godot engine start
         document.addEventListener('DOMContentLoaded', function() {
-            var origStartGame = null;
-            // Wait for Godot's engine object to be available
             var interval = setInterval(function() {
                 if (typeof Engine !== 'undefined') {
                     clearInterval(interval);
@@ -111,14 +122,13 @@ def inject_sdk(html_path: str) -> None:
     })();
     </script>
 """
+        content = content.replace("</body>", lifecycle_js + "\n</body>", 1)
+        print("✅ Injected CrazyGames lifecycle hooks before </body>")
 
-    # Insert before </body>
-    content = content.replace("</body>", lifecycle_js + "\n</body>", 1)
-
-    with open(html_path, "w", encoding="utf-8") as f:
+    with open(html_file, "w", encoding="utf-8") as f:
         f.write(content)
 
-    print(f"✅ CrazyGames SDK injected into: {html_path}")
+    print(f"🎉 Fully prepared HTML build: {html_path}")
 
 
 if __name__ == "__main__":
