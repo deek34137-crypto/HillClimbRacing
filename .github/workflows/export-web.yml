@@ -1,0 +1,72 @@
+name: Export Web & Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  export-web:
+    name: Export Godot Web Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Godot 4.2
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.2.2
+          use-dotnet: false
+          include-templates: true
+
+      - name: Verify Godot installation
+        run: godot --version
+
+      - name: Create export directory
+        run: mkdir -p export/web
+
+      - name: Export Web build
+        run: |
+          godot --headless --export-release "Web" export/web/index.html
+        env:
+          DISPLAY: ":99"
+
+      - name: Inject CrazyGames SDK into index.html
+        run: |
+          python3 scripts/inject_crazygames_sdk.py export/web/index.html
+
+      - name: Verify exported files
+        run: |
+          echo "=== Exported files ==="
+          ls -lh export/web/
+          echo "=== Total size ==="
+          du -sh export/web/
+
+      - name: Upload artifact for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: export/web
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: export-web
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
